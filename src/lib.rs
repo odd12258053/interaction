@@ -37,15 +37,18 @@ mod keys {
     pub(crate) const BACKSPACE: u8 = 127;
 }
 
+type Completion = fn(&Vec<u8>, &mut Vec<&[u8]>);
+
 struct Line<'a> {
     backup: Termios,
     position: usize,
     buffer: &'a mut Vec<u8>,
     prompt: &'a [u8],
+    completion: &'a Option<Completion>
 }
 
 impl<'a> Line<'a> {
-    fn new(buffer: &'a mut Vec<u8>, prompt: &'a [u8]) -> Self {
+    fn new(buffer: &'a mut Vec<u8>, prompt: &'a [u8], completion: &'a Option<Completion>) -> Self {
         let backup = Termios::from_fd(get_stdin_fd()).unwrap();
         Line::enable_raw_mode();
         Line {
@@ -53,6 +56,7 @@ impl<'a> Line<'a> {
             position: 0,
             buffer,
             prompt,
+            completion
         }
     }
 
@@ -81,7 +85,7 @@ impl<'a> Line<'a> {
         let mut stdout = io::stdout();
         stdout.write_all(
             &[
-                format!("\x1b[{}D\x1b[K", self.prompt.len() + self.buffer.len() + 1).as_bytes(),
+                b"\x1b[0G\x1b[K",
                 self.prompt,
                 &self.buffer[..],
                 format!("\r\x1b[{}C", self.position + self.prompt.len()).as_bytes(),
@@ -92,15 +96,68 @@ impl<'a> Line<'a> {
         Ok(())
     }
 
-    fn get(&mut self) -> io::Result<()> {
+    fn completion(&mut self, callback: &Completion) -> io::Result<u8> {
+        let mut completions = Vec::new();
+        callback(self.buffer, &mut completions);
+        if completions.len() == 0 {
+            return Ok(0);
+        }
+        let mut stdin = io::stdin();
+        let bk = self.buffer.clone();
+        let mut buf = vec![0; 1];
+        loop {
+            for &comp in completions.iter() {
+                self.buffer.clear();
+                self.buffer.extend(comp);
+                self.position = self.buffer.len();
+                self.refresh_line()?;
+
+                let n = stdin.read(&mut buf)?;
+                assert_eq!(n, 1);
+
+                match buf[0] {
+                    keys::CTRL_I => {
+                        continue;
+                    }
+                    keys::ESC => {
+                        self.buffer.clear();
+                        self.buffer.extend(&bk);
+                        self.position = self.buffer.len();
+                        self.refresh_line()?;
+                        return Ok(buf[0]);
+                    }
+                    _ => {
+                        return Ok(buf[0]);
+                    }
+                }
+            }
+        }
+    }
+
+    fn fetch(&mut self) -> io::Result<()> {
         let mut stdin = io::stdin();
 
         self.refresh_line()?;
 
+        let mut buf = vec![0; 1];
+
         loop {
-            let mut buf = vec![0; 1];
             let n = stdin.read(&mut buf)?;
             assert_eq!(n, 1);
+
+            // Tab
+            if buf[0] == keys::CTRL_I {
+                match self.completion {
+                    Some(callback) => {
+                        let c = self.completion(callback)?;
+                        if c == 0 {
+                            continue;
+                        }
+                        buf[0] = c;
+                    }
+                    None => continue
+                }
+            }
 
             if buf[0] == keys::ESC {
                 let mut buf2 = vec![0; 3];
@@ -226,10 +283,6 @@ impl<'a> Line<'a> {
                     self.buffer.remove(self.position);
                     self.refresh_line()?;
                 }
-                keys::CTRL_I => {
-                    // TODO
-                    continue;
-                }
                 keys::CTRL_J | keys::ENTER => {
                     break;
                 }
@@ -266,34 +319,41 @@ impl<'a> Drop for Line<'a> {
     }
 }
 
-pub struct Interaction {
-    prompt: Vec<u8>,
+pub struct Interaction<'a> {
+    prompt: &'a [u8],
+    completion: Option<Completion>
 }
 
-impl Interaction {
-    pub fn new() -> Self {
-        Interaction { prompt: vec![0; 0] }
+impl<'a> Interaction<'a> {
+    pub fn new(prompt: &'a [u8], completion: Completion) -> Self {
+        Interaction { prompt, completion: Some(completion) }
     }
 
-    pub fn from(prompt: &[u8]) -> Self {
+    pub fn from(prompt: &'a [u8]) -> Self {
         Interaction {
-            prompt: prompt.to_vec(),
+            prompt,
+            completion: None,
         }
     }
 
-    pub fn from_str(prompt: &str) -> Self {
+    pub fn from_str(prompt: &'a str) -> Self {
         Interaction {
-            prompt: prompt.as_bytes().to_vec(),
+            prompt: prompt.as_bytes(),
+            completion: None,
         }
     }
 
-    pub fn line(&mut self) -> io::Result<Vec<u8>> {
+    pub fn line(&self) -> io::Result<Vec<u8>> {
         let mut buffer = vec![0; 0];
-        Line::new(&mut buffer, &self.prompt).get()?;
+        Line::new(&mut buffer, &self.prompt, &self.completion).fetch()?;
         Ok(buffer)
     }
 
-    pub fn set_prompt(&mut self, prompt: &[u8]) {
-        self.prompt = prompt.to_vec()
+    pub fn set_prompt(&mut self, prompt: &'a [u8]) {
+        self.prompt = prompt
+    }
+
+    pub fn set_completion(&mut self, completion: Completion) {
+        self.completion = Some(completion)
     }
 }
