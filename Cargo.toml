@@ -1,0 +1,17 @@
+[package]
+name = "interaction"
+version = "0.1.0"
+authors = ["odd <odd12258053@gmail.com>"]
+edition = "2018"
+description = "Interaction is a minimal and a simple readline library for Rust."
+readme = "README.md"
+documentation = "https://docs.rs/interaction"
+homepage = "https://github.com/odd12258053/interaction"
+repository = "https://github.com/odd12258053/interaction"
+license = "MIT"
+keywords = ["readline", "cli"]
+categories = ["development-tools", "command-line-interface", "command-line-utilities"]
+
+[dependencies]
+libc = "0.2.82"
+termios = "0.3.3"
