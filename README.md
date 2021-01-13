@@ -7,16 +7,16 @@ Interaction is a minimal and a simple readline library for Rust.
 * [x] Single line editing mode
 * [x] Multi line editing mode
 * [x] Key bindings
-* [ ] History
+* [x] History
 * [x] Completion
 
 
-# Usage 
+# Usage
 Add this in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-interaction = "0.2.0"
+interaction = "0.3.0"
 ```
 
 Or, if you installed [cargo-edit](https://github.com/killercup/cargo-edit), you run this command:
@@ -25,20 +25,37 @@ Or, if you installed [cargo-edit](https://github.com/killercup/cargo-edit), you 
 $ cargo add interaction
 ```
 
-import `interaction::Interaction`.
+# Example
 
 ```rust
-use interaction::Interaction;
+use interaction::InteractionBuilder;
+use std::io;
 
 fn main() {
-    let mut inter = Interaction::from_str(";;>");
-    inter.set_completion(|_input, completions| {
-        completions.push(b"foo");
-        completions.push(b"bar");
-    });
+    let history_file = "./.example_history";
+    let mut inter = InteractionBuilder::new()
+        .prompt_str(";;>")
+        .history_limit(5)
+        .completion(|_input, completions| {
+            completions.push(b"foo");
+            completions.push(b"bar");
+        })
+        .load_history(history_file)
+        .unwrap()
+        .build();
     loop {
-        let input = inter.line().unwrap();
-        // write any code.
+        match inter.line() {
+            Ok(input) => {
+                // write any code.
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {
+                inter.save_history(history_file).unwrap();
+                break;
+            }
+            Err(_) => {
+                break;
+            }
+        }
     }
 }
 ```

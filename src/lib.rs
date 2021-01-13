@@ -1,8 +1,9 @@
 use libc;
+use std::collections::VecDeque;
+use std::fs::File;
 use std::io;
 use std::io::{Read, Write};
 use std::os::unix::io::RawFd;
-use std::process;
 use termios::*;
 
 fn get_stdin_fd() -> RawFd {
@@ -56,7 +57,93 @@ mod keys {
     pub(crate) const BACKSPACE: u8 = 127;
 }
 
-type Completion = fn(&Vec<u8>, &mut Vec<&[u8]>);
+pub type Completion = fn(&Vec<u8>, &mut Vec<&[u8]>);
+
+pub struct History {
+    commands: VecDeque<Vec<u8>>,
+    position: usize,
+    // if limit is 0, history is unlimited.
+    limit: usize,
+}
+
+impl History {
+    pub fn new(limit: usize) -> Self {
+        History {
+            commands: VecDeque::new(),
+            position: 0,
+            limit,
+        }
+    }
+
+    pub(crate) fn next(&mut self) -> Option<&Vec<u8>> {
+        if self.commands.len() == 0 || self.position == self.commands.len() {
+            None
+        } else {
+            self.position += 1;
+            self.commands.get(self.position)
+        }
+    }
+
+    pub(crate) fn prev(&mut self) -> Option<&Vec<u8>> {
+        if self.commands.len() == 0 || self.position == 0 {
+            None
+        } else {
+            self.position -= 1;
+            self.commands.get(self.position)
+        }
+    }
+
+    fn _append(&mut self, history: Vec<u8>) {
+        if self.limit > 0 && self.commands.len() == self.limit {
+            self.commands.pop_front();
+        }
+        self.commands.push_back(history);
+    }
+
+    pub fn append(&mut self, history: Vec<u8>) {
+        self._append(history);
+        self.position = self.commands.len();
+    }
+
+    pub fn load(&mut self, file_path: &str) -> io::Result<()> {
+        let mut file = match File::open(file_path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        let mut buffer = vec![0; 4096];
+        let mut cmd = vec![0; 0];
+        loop {
+            let n = file.read(&mut buffer)?;
+            if n == 0 {
+                break;
+            }
+            for c in buffer[..n].iter() {
+                if *c == b'\n' && cmd.len() > 0 {
+                    self._append(cmd);
+                    cmd = vec![0; 0];
+                    continue;
+                }
+                cmd.push(*c);
+            }
+        }
+        if cmd.len() > 0 {
+            self._append(cmd);
+        }
+        if self.commands.len() > 0 {
+            self.position = self.commands.len();
+        }
+        Ok(())
+    }
+    pub fn save(&mut self, file_path: &str) -> io::Result<()> {
+        File::create(file_path).and_then(|mut file| {
+            for cmd in self.commands.iter() {
+                file.write_all(cmd).and(file.write_all(b"\n"))?;
+            }
+            file.flush()
+        })
+    }
+}
 
 struct Line<'a> {
     backup: Termios,
@@ -66,6 +153,7 @@ struct Line<'a> {
     completion: &'a Option<Completion>,
     multi: bool,
     row: usize,
+    history: &'a mut History,
 }
 
 impl<'a> Line<'a> {
@@ -74,9 +162,10 @@ impl<'a> Line<'a> {
         prompt: &'a [u8],
         completion: &'a Option<Completion>,
         multi: bool,
+        history: &'a mut History,
     ) -> Self {
         let backup = Termios::from_fd(get_stdin_fd()).unwrap();
-        Line::enable_raw_mode();
+        Line::enable_raw_mode().unwrap();
         Line {
             backup,
             position: 0,
@@ -85,43 +174,41 @@ impl<'a> Line<'a> {
             completion,
             multi,
             row: 0,
+            history,
         }
     }
 
-    fn enable_raw_mode() {
+    fn enable_raw_mode() -> io::Result<()> {
         let fd = get_stdin_fd();
-        let mut termios = Termios::from_fd(fd).unwrap();
-
-        termios.c_iflag &= !(BRKINT | INPCK | ISTRIP | ICRNL | IXON);
-        termios.c_oflag &= !OPOST;
-        termios.c_cflag |= CS8;
-        termios.c_lflag &= !(ECHO | ICANON | IEXTEN | ISIG);
-        termios.c_cc[VMIN] = 1;
-        termios.c_cc[VTIME] = 0;
-
-        tcsetattr(fd, TCSANOW, &termios).unwrap();
-        tcflush(fd, TCIOFLUSH).unwrap();
+        Termios::from_fd(fd).and_then(|mut termios| {
+            termios.c_iflag &= !(BRKINT | INPCK | ISTRIP | ICRNL | IXON);
+            termios.c_oflag &= !OPOST;
+            termios.c_cflag |= CS8;
+            termios.c_lflag &= !(ECHO | ICANON | IEXTEN | ISIG);
+            termios.c_cc[VMIN] = 1;
+            termios.c_cc[VTIME] = 0;
+            tcsetattr(fd, TCSANOW, &termios).and(tcflush(fd, TCIOFLUSH))
+        })
     }
 
-    fn disable_raw_mode(&self) {
+    fn disable_raw_mode(&self) -> io::Result<()> {
         let fd = get_stdin_fd();
-        tcsetattr(fd, TCSANOW, &self.backup).unwrap();
-        tcflush(fd, TCIOFLUSH).unwrap();
+        tcsetattr(fd, TCSANOW, &self.backup).and(tcflush(fd, TCIOFLUSH))
     }
 
     fn refresh_single_line(&self) -> io::Result<()> {
         let mut stdout = io::stdout();
-        stdout.write_all(
-            &[
-                b"\x1b[0G\x1b[K",
-                self.prompt,
-                &self.buffer[..],
-                format!("\r\x1b[{}C", self.position + self.prompt.len()).as_bytes(),
-            ]
-            .concat(),
-        )?;
-        stdout.flush()?;
-        Ok(())
+        stdout
+            .write_all(
+                &[
+                    b"\x1b[0G\x1b[K",
+                    self.prompt,
+                    &self.buffer[..],
+                    format!("\r\x1b[{}C", self.position + self.prompt.len()).as_bytes(),
+                ]
+                .concat(),
+            )
+            .and(stdout.flush())
     }
 
     fn refresh_multi_line(&mut self) -> io::Result<()> {
@@ -208,30 +295,17 @@ impl<'a> Line<'a> {
         }
     }
 
-    fn fetch(&mut self) -> io::Result<()> {
+    fn fetch(mut self) -> io::Result<()> {
         let mut stdin = io::stdin();
 
         self.refresh_line()?;
 
         let mut buf = vec![0; 1];
-
+        let mut tmp = vec![0; 0];
+        let mut used = false;
         loop {
             let n = stdin.read(&mut buf)?;
             assert_eq!(n, 1);
-
-            // Tab
-            if buf[0] == keys::CTRL_I {
-                match self.completion {
-                    Some(callback) => {
-                        let c = self.completion(callback)?;
-                        if c == 0 {
-                            continue;
-                        }
-                        buf[0] = c;
-                    }
-                    None => continue,
-                }
-            }
 
             if buf[0] == keys::ESC {
                 let mut buf2 = vec![0; 3];
@@ -278,13 +352,43 @@ impl<'a> Line<'a> {
                                 continue;
                             }
                             // Up
-                            keys::A => {
-                                continue;
-                            }
+                            keys::A => match self.history.prev() {
+                                Some(cmd) => {
+                                    if !used {
+                                        tmp.extend(&self.buffer[..]);
+                                        used = true;
+                                    }
+                                    self.buffer.clear();
+                                    self.buffer.extend(cmd);
+                                    self.position = self.buffer.len();
+                                    self.refresh_line()?;
+                                    continue;
+                                }
+                                None => {
+                                    continue;
+                                }
+                            },
                             // Down
-                            keys::B => {
-                                continue;
-                            }
+                            keys::B => match self.history.next() {
+                                Some(cmd) => {
+                                    self.buffer.clear();
+                                    self.buffer.extend(cmd);
+                                    self.position = self.buffer.len();
+                                    self.refresh_line()?;
+                                    continue;
+                                }
+                                None => {
+                                    if used {
+                                        used = false;
+                                        self.buffer.clear();
+                                        self.buffer.extend(&tmp[..]);
+                                        self.position = self.buffer.len();
+                                        tmp.clear();
+                                        self.refresh_line()?;
+                                    }
+                                    continue;
+                                }
+                            },
                             // Right
                             keys::C => {
                                 buf[0] = keys::CTRL_F;
@@ -294,7 +398,7 @@ impl<'a> Line<'a> {
                                 buf[0] = keys::CTRL_B;
                             }
                             _ => {
-                                continue;
+                                buf[0] = buf2[1];
                             }
                         }
                     }
@@ -303,6 +407,20 @@ impl<'a> Line<'a> {
                         // ...
                         buf[0] = buf2[0];
                     }
+                }
+            }
+
+            // Tab
+            if buf[0] == keys::CTRL_I {
+                match self.completion {
+                    Some(callback) => {
+                        let c = self.completion(callback)?;
+                        if c == 0 {
+                            continue;
+                        }
+                        buf[0] = c;
+                    }
+                    None => continue,
                 }
             }
 
@@ -322,14 +440,14 @@ impl<'a> Line<'a> {
                 }
                 // Exit the process.
                 keys::CTRL_C => {
-                    self.disable_raw_mode();
-                    process::exit(0);
+                    self.disable_raw_mode()?;
+                    return Err(io::ErrorKind::Interrupted.into());
                 }
                 keys::CTRL_D => {
                     // If the buffer is empty, exit the process.
                     if self.buffer.len() == 0 {
-                        self.disable_raw_mode();
-                        process::exit(0);
+                        self.disable_raw_mode()?;
+                        return Err(io::ErrorKind::Interrupted.into());
                     // Delete a char at the cursor.
                     } else if self.position < self.buffer.len() {
                         self.buffer.remove(self.position);
@@ -386,15 +504,15 @@ impl<'a> Line<'a> {
             }
         }
         let mut stdout = io::stdout();
-        stdout.write_all(format!("\n\x1b[{}D", self.prompt.len() + self.position).as_bytes())?;
-        stdout.flush()?;
-        Ok(())
+        stdout
+            .write_all(format!("\n\x1b[{}D", self.prompt.len() + self.position).as_bytes())
+            .and(stdout.flush())
     }
 }
 
 impl<'a> Drop for Line<'a> {
     fn drop(&mut self) {
-        self.disable_raw_mode()
+        self.disable_raw_mode().unwrap()
     }
 }
 
@@ -402,36 +520,123 @@ pub struct Interaction<'a> {
     prompt: &'a [u8],
     completion: Option<Completion>,
     pub multi: bool,
+    history: History,
 }
 
 impl<'a> Interaction<'a> {
-    pub fn new(prompt: &'a [u8], completion: Option<Completion>, multi: bool) -> Self {
+    pub fn new(
+        prompt: &'a [u8],
+        completion: Option<Completion>,
+        multi: bool,
+        limit: usize,
+    ) -> Self {
         Interaction {
             prompt,
             completion,
             multi,
+            history: History::new(limit),
         }
     }
 
     pub fn from(prompt: &'a [u8]) -> Self {
-        Interaction::new(prompt, None, true)
+        Interaction::new(prompt, None, true, 0)
     }
 
     pub fn from_str(prompt: &'a str) -> Self {
-        Interaction::new(prompt.as_bytes(), None, true)
+        Interaction::new(prompt.as_bytes(), None, true, 0)
     }
 
-    pub fn line(&self) -> io::Result<Vec<u8>> {
+    pub fn line(&mut self) -> io::Result<Vec<u8>> {
         let mut buffer = vec![0; 0];
-        Line::new(&mut buffer, &self.prompt, &self.completion, self.multi).fetch()?;
-        Ok(buffer)
+        Line::new(
+            &mut buffer,
+            &self.prompt,
+            &self.completion,
+            self.multi,
+            &mut self.history,
+        )
+        .fetch()
+        .and_then(|_| {
+            if buffer.len() > 0 {
+                self.history.append(buffer.clone());
+            }
+            Ok(buffer)
+        })
     }
 
     pub fn set_prompt(&mut self, prompt: &'a [u8]) {
-        self.prompt = prompt
+        self.prompt = prompt;
     }
 
     pub fn set_completion(&mut self, completion: Completion) {
-        self.completion = Some(completion)
+        self.completion = Some(completion);
+    }
+
+    pub fn set_history_limit(&mut self, limit: usize) {
+        self.history = History::new(limit);
+    }
+
+    pub fn load_history(&mut self, file_path: &str) -> io::Result<()> {
+        self.history.load(file_path)
+    }
+
+    pub fn save_history(&mut self, file_path: &str) -> io::Result<()> {
+        self.history.save(file_path)
+    }
+}
+
+pub struct InteractionBuilder<'a> {
+    prompt: &'a [u8],
+    completion: Option<Completion>,
+    multi: bool,
+    history: History,
+}
+
+impl<'a> InteractionBuilder<'a> {
+    pub fn new() -> Self {
+        InteractionBuilder {
+            prompt: b"",
+            completion: None,
+            multi: true,
+            history: History::new(0),
+        }
+    }
+
+    pub fn build(self) -> Interaction<'a> {
+        Interaction {
+            prompt: self.prompt,
+            completion: self.completion,
+            multi: self.multi,
+            history: self.history,
+        }
+    }
+
+    pub fn prompt(mut self, prompt: &'a [u8]) -> Self {
+        self.prompt = prompt;
+        self
+    }
+
+    pub fn prompt_str(mut self, prompt: &'a str) -> Self {
+        self.prompt = prompt.as_bytes();
+        self
+    }
+
+    pub fn completion(mut self, completion: Completion) -> Self {
+        self.completion = Some(completion);
+        self
+    }
+
+    pub fn mode(mut self, multi: bool) -> Self {
+        self.multi = multi;
+        self
+    }
+
+    pub fn history_limit(mut self, limit: usize) -> Self {
+        self.history = History::new(limit);
+        self
+    }
+
+    pub fn load_history(mut self, file_path: &str) -> io::Result<Self> {
+        self.history.load(file_path).and(Ok(self))
     }
 }
