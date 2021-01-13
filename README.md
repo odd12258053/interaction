@@ -16,7 +16,7 @@ Add this in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-interaction = "0.3.0"
+interaction = "0.3.1"
 ```
 
 Or, if you installed [cargo-edit](https://github.com/killercup/cargo-edit), you run this command:

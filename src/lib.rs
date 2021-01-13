@@ -4,6 +4,7 @@ use std::fs::File;
 use std::io;
 use std::io::{Read, Write};
 use std::os::unix::io::RawFd;
+use std::path::Path;
 use termios::*;
 
 fn get_stdin_fd() -> RawFd {
@@ -105,7 +106,7 @@ impl History {
         self.position = self.commands.len();
     }
 
-    pub fn load(&mut self, file_path: &str) -> io::Result<()> {
+    pub fn load<P: AsRef<Path>>(&mut self, file_path: P) -> io::Result<()> {
         let mut file = match File::open(file_path) {
             Ok(file) => file,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -135,7 +136,7 @@ impl History {
         }
         Ok(())
     }
-    pub fn save(&mut self, file_path: &str) -> io::Result<()> {
+    pub fn save<P: AsRef<Path>>(&mut self, file_path: P) -> io::Result<()> {
         File::create(file_path).and_then(|mut file| {
             for cmd in self.commands.iter() {
                 file.write_all(cmd).and(file.write_all(b"\n"))?;
@@ -576,11 +577,11 @@ impl<'a> Interaction<'a> {
         self.history = History::new(limit);
     }
 
-    pub fn load_history(&mut self, file_path: &str) -> io::Result<()> {
+    pub fn load_history<P: AsRef<Path>>(&mut self, file_path: P) -> io::Result<()> {
         self.history.load(file_path)
     }
 
-    pub fn save_history(&mut self, file_path: &str) -> io::Result<()> {
+    pub fn save_history<P: AsRef<Path>>(&mut self, file_path: P) -> io::Result<()> {
         self.history.save(file_path)
     }
 }
@@ -636,7 +637,7 @@ impl<'a> InteractionBuilder<'a> {
         self
     }
 
-    pub fn load_history(mut self, file_path: &str) -> io::Result<Self> {
+    pub fn load_history<P: AsRef<Path>>(mut self, file_path: P) -> io::Result<Self> {
         self.history.load(file_path).and(Ok(self))
     }
 }
