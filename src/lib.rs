@@ -517,16 +517,16 @@ impl<'a> Drop for Line<'a> {
     }
 }
 
-pub struct Interaction<'a> {
-    prompt: &'a [u8],
+pub struct Interaction {
+    prompt: Vec<u8>,
     completion: Option<Completion>,
     pub multi: bool,
     history: History,
 }
 
-impl<'a> Interaction<'a> {
+impl Interaction {
     pub fn new(
-        prompt: &'a [u8],
+        prompt: Vec<u8>,
         completion: Option<Completion>,
         multi: bool,
         limit: usize,
@@ -539,12 +539,12 @@ impl<'a> Interaction<'a> {
         }
     }
 
-    pub fn from(prompt: &'a [u8]) -> Self {
-        Interaction::new(prompt, None, true, 0)
+    pub fn from(prompt: &[u8]) -> Self {
+        Interaction::new(prompt.to_vec(), None, true, 0)
     }
 
-    pub fn from_str(prompt: &'a str) -> Self {
-        Interaction::new(prompt.as_bytes(), None, true, 0)
+    pub fn from_str(prompt: &str) -> Self {
+        Interaction::new(prompt.as_bytes().to_vec(), None, true, 0)
     }
 
     pub fn line(&mut self) -> io::Result<Vec<u8>> {
@@ -565,8 +565,8 @@ impl<'a> Interaction<'a> {
         })
     }
 
-    pub fn set_prompt(&mut self, prompt: &'a [u8]) {
-        self.prompt = prompt;
+    pub fn set_prompt(&mut self, prompt: &[u8]) {
+        self.prompt = prompt.to_vec();
     }
 
     pub fn set_completion(&mut self, completion: Completion) {
@@ -586,24 +586,24 @@ impl<'a> Interaction<'a> {
     }
 }
 
-pub struct InteractionBuilder<'a> {
-    prompt: &'a [u8],
+pub struct InteractionBuilder {
+    prompt: Vec<u8>,
     completion: Option<Completion>,
     multi: bool,
     history: History,
 }
 
-impl<'a> InteractionBuilder<'a> {
+impl InteractionBuilder {
     pub fn new() -> Self {
         InteractionBuilder {
-            prompt: b"",
+            prompt: vec![0; 0],
             completion: None,
             multi: true,
             history: History::new(0),
         }
     }
 
-    pub fn build(self) -> Interaction<'a> {
+    pub fn build(self) -> Interaction {
         Interaction {
             prompt: self.prompt,
             completion: self.completion,
@@ -612,13 +612,13 @@ impl<'a> InteractionBuilder<'a> {
         }
     }
 
-    pub fn prompt(mut self, prompt: &'a [u8]) -> Self {
-        self.prompt = prompt;
+    pub fn prompt(mut self, prompt: &[u8]) -> Self {
+        self.prompt = prompt.to_vec();
         self
     }
 
-    pub fn prompt_str(mut self, prompt: &'a str) -> Self {
-        self.prompt = prompt.as_bytes();
+    pub fn prompt_str(mut self, prompt: &str) -> Self {
+        self.prompt = prompt.as_bytes().to_vec();
         self
     }
 
