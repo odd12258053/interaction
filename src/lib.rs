@@ -1,12 +1,30 @@
+use libc;
 use std::io;
 use std::io::{Read, Write};
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::unix::io::RawFd;
 use std::process;
 use termios::*;
 
 fn get_stdin_fd() -> RawFd {
-    let stdin = io::stdin();
-    stdin.as_raw_fd()
+    libc::STDIN_FILENO
+}
+
+fn get_stdout_fd() -> RawFd {
+    libc::STDOUT_FILENO
+}
+
+fn get_col() -> u16 {
+    let mut winsize = libc::winsize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    if unsafe { libc::ioctl(get_stdout_fd(), libc::TIOCGWINSZ, &mut winsize) } == 0 {
+        winsize.ws_col
+    } else {
+        80
+    }
 }
 
 mod keys {
@@ -20,7 +38,8 @@ mod keys {
     pub(crate) const CTRL_I: u8 = 9;
     pub(crate) const CTRL_J: u8 = 10;
     pub(crate) const CTRL_K: u8 = 11;
-    pub(crate) const ENTER: u8 = 13;
+    pub(crate) const CTRL_L: u8 = 12;
+    pub(crate) const CTRL_M: u8 = 13;
     pub(crate) const ESC: u8 = 27;
     pub(crate) const ONE: u8 = 49;
     pub(crate) const TWO: u8 = 50;
@@ -44,11 +63,18 @@ struct Line<'a> {
     position: usize,
     buffer: &'a mut Vec<u8>,
     prompt: &'a [u8],
-    completion: &'a Option<Completion>
+    completion: &'a Option<Completion>,
+    multi: bool,
+    row: usize,
 }
 
 impl<'a> Line<'a> {
-    fn new(buffer: &'a mut Vec<u8>, prompt: &'a [u8], completion: &'a Option<Completion>) -> Self {
+    fn new(
+        buffer: &'a mut Vec<u8>,
+        prompt: &'a [u8],
+        completion: &'a Option<Completion>,
+        multi: bool,
+    ) -> Self {
         let backup = Termios::from_fd(get_stdin_fd()).unwrap();
         Line::enable_raw_mode();
         Line {
@@ -56,7 +82,9 @@ impl<'a> Line<'a> {
             position: 0,
             buffer,
             prompt,
-            completion
+            completion,
+            multi,
+            row: 0,
         }
     }
 
@@ -81,7 +109,7 @@ impl<'a> Line<'a> {
         tcflush(fd, TCIOFLUSH).unwrap();
     }
 
-    fn refresh_line(&self) -> io::Result<()> {
+    fn refresh_single_line(&self) -> io::Result<()> {
         let mut stdout = io::stdout();
         stdout.write_all(
             &[
@@ -94,6 +122,52 @@ impl<'a> Line<'a> {
         )?;
         stdout.flush()?;
         Ok(())
+    }
+
+    fn refresh_multi_line(&mut self) -> io::Result<()> {
+        let col = get_col() as usize;
+        let mut stdout = io::stdout();
+        if self.row == 0 {
+            stdout.write_all(b"\x1b[0G\x1b[J")?;
+        } else {
+            stdout.write_all(format!("\x1b[0G\x1b[{}A\x1b[J", self.row).as_bytes())?;
+        }
+        let mut cnt = 0;
+        let mut row: usize = 0;
+        for c in self.prompt.iter().chain(self.buffer.iter()) {
+            stdout.write_all(&[*c])?;
+            cnt += 1;
+            if cnt == col {
+                stdout.write_all(b"\n\x1b[0G")?;
+                cnt = 0;
+                row += 1;
+            }
+        }
+        stdout.write_all(b"\r")?;
+        if row == 0 {
+            stdout.write_all(b"\x1b[0G")?;
+        } else {
+            stdout.write_all(format!("\x1b[0G\x1b[{}A", row).as_bytes())?;
+        }
+        let pos = self.prompt.len() + self.position;
+        let m = pos % col;
+        self.row = pos / col;
+        if self.row > 0 {
+            stdout.write_all(format!("\x1b[{}B", self.row).as_bytes())?;
+        }
+        if m > 0 {
+            stdout.write_all(format!("\x1b[{}C", m).as_bytes())?;
+        }
+        stdout.flush()?;
+        Ok(())
+    }
+
+    fn refresh_line(&mut self) -> io::Result<()> {
+        if self.multi {
+            self.refresh_multi_line()
+        } else {
+            self.refresh_single_line()
+        }
     }
 
     fn completion(&mut self, callback: &Completion) -> io::Result<u8> {
@@ -155,7 +229,7 @@ impl<'a> Line<'a> {
                         }
                         buf[0] = c;
                     }
-                    None => continue
+                    None => continue,
                 }
             }
 
@@ -283,16 +357,21 @@ impl<'a> Line<'a> {
                     self.buffer.remove(self.position);
                     self.refresh_line()?;
                 }
-                keys::CTRL_J | keys::ENTER => {
+                // Enter
+                keys::CTRL_J | keys::CTRL_M => {
                     break;
                 }
                 keys::CTRL_K => {
-                    // TODO
-                    continue;
+                    self.buffer.truncate(self.position);
+                    self.refresh_line()?;
+                }
+                keys::CTRL_L => {
+                    let mut stdout = io::stdout();
+                    stdout.write_all(b"\x1b[H\x1b[2J")?;
+                    self.refresh_line()?;
                 }
                 // esc,
                 keys::ESC => {
-                    // TODO
                     continue;
                 }
                 _ => {
@@ -321,31 +400,30 @@ impl<'a> Drop for Line<'a> {
 
 pub struct Interaction<'a> {
     prompt: &'a [u8],
-    completion: Option<Completion>
+    completion: Option<Completion>,
+    pub multi: bool,
 }
 
 impl<'a> Interaction<'a> {
-    pub fn new(prompt: &'a [u8], completion: Completion) -> Self {
-        Interaction { prompt, completion: Some(completion) }
+    pub fn new(prompt: &'a [u8], completion: Option<Completion>, multi: bool) -> Self {
+        Interaction {
+            prompt,
+            completion,
+            multi,
+        }
     }
 
     pub fn from(prompt: &'a [u8]) -> Self {
-        Interaction {
-            prompt,
-            completion: None,
-        }
+        Interaction::new(prompt, None, true)
     }
 
     pub fn from_str(prompt: &'a str) -> Self {
-        Interaction {
-            prompt: prompt.as_bytes(),
-            completion: None,
-        }
+        Interaction::new(prompt.as_bytes(), None, true)
     }
 
     pub fn line(&self) -> io::Result<Vec<u8>> {
         let mut buffer = vec![0; 0];
-        Line::new(&mut buffer, &self.prompt, &self.completion).fetch()?;
+        Line::new(&mut buffer, &self.prompt, &self.completion, self.multi).fetch()?;
         Ok(buffer)
     }
 

@@ -1,12 +1,12 @@
 # Interaction
 ![Crates.io](https://img.shields.io/crates/l/interaction)
-[![Crates.io](https://img.shields.io/crates/v/rusfuse.svg)](https://crates.io/crates/interaction)
+[![Crates.io](https://img.shields.io/crates/v/interaction.svg)](https://crates.io/crates/interaction)
 
 Interaction is a minimal and a simple readline library for Rust.
 
-* [x] Single multi line editing mode
-  * [ ] with the usual key bindings implemented.
-* [ ] Multi line editing mode with the usual key bindings implemented.
+* [x] Single line editing mode
+* [x] Multi line editing mode
+* [x] Key bindings
 * [ ] History
 * [x] Completion
 
