@@ -58,7 +58,7 @@ mod keys {
     pub(crate) const BACKSPACE: u8 = 127;
 }
 
-pub type Completion = fn(&Vec<u8>, &mut Vec<&[u8]>);
+pub type Completion = fn(&Vec<u8>, &mut Vec<Vec<u8>>);
 
 pub struct History {
     commands: VecDeque<Vec<u8>>,
@@ -268,7 +268,7 @@ impl<'a> Line<'a> {
         let bk = self.buffer.clone();
         let mut buf = vec![0; 1];
         loop {
-            for &comp in completions.iter() {
+            for comp in completions.iter() {
                 self.buffer.clear();
                 self.buffer.extend(comp);
                 self.position = self.buffer.len();

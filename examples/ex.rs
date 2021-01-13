@@ -7,8 +7,8 @@ fn main() {
         .prompt_str(";;>")
         .history_limit(5)
         .completion(|_input, completions| {
-            completions.push(b"foo");
-            completions.push(b"bar");
+            completions.push(b"foo".to_vec());
+            completions.push(b"bar".to_vec());
         })
         .load_history(history_file)
         .unwrap()

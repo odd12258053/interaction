@@ -16,7 +16,7 @@ Add this in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-interaction = "0.3.2"
+interaction = "0.3.3"
 ```
 
 Or, if you installed [cargo-edit](https://github.com/killercup/cargo-edit), you run this command:
@@ -37,8 +37,8 @@ fn main() {
         .prompt_str(";;>")
         .history_limit(5)
         .completion(|_input, completions| {
-            completions.push(b"foo");
-            completions.push(b"bar");
+            completions.push(b"foo".to_vec());
+            completions.push(b"bar".to_vec());
         })
         .load_history(history_file)
         .unwrap()
