@@ -4,19 +4,19 @@
 
 Interaction is a minimal and a simple readline library for Rust.
 
-* [x] Single line editing mode
-* [x] Multi line editing mode
-* [x] Key bindings
-* [x] History
-* [x] Completion
-
+## Features
+* Single line editing mode
+* Multi line editing mode
+* Key bindings
+* History
+* Completion
 
 # Usage
 Add this in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-interaction = "0.3.3"
+interaction = "0.3.4"
 ```
 
 Or, if you installed [cargo-edit](https://github.com/killercup/cargo-edit), you run this command:

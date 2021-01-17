@@ -1,3 +1,46 @@
+//! Interaction is a minimal and a simple readline library.
+//!
+//! Features
+//! * Single line editing mode
+//! * Multi line editing mode
+//! * Key bindings
+//! * History
+//! * Completion
+//!
+//! # Example
+//! ```no_run
+//! use interaction::InteractionBuilder;
+//! use std::io;
+//!
+//! fn main() {
+//!     let history_file = "./.example_history";
+//!     let mut inter = InteractionBuilder::new()
+//!         .prompt_str(";;>")
+//!         .history_limit(5)
+//!         .completion(|_input, completions| {
+//!             completions.push(b"foo".to_vec());
+//!             completions.push(b"bar".to_vec());
+//!         })
+//!         .load_history(history_file)
+//!         .unwrap()
+//!         .build();
+//!     loop {
+//!         match inter.line() {
+//!             Ok(input) => {
+//!                 // write any code.
+//!             }
+//!             Err(e) if e.kind() == io::ErrorKind::Interrupted => {
+//!                 inter.save_history(history_file).unwrap();
+//!                 break;
+//!             }
+//!             Err(_) => {
+//!                 break;
+//!             }
+//!         }
+//!     }
+//! }
+//! ```
+
 use libc;
 use std::collections::VecDeque;
 use std::fs::File;
@@ -58,8 +101,10 @@ mod keys {
     pub(crate) const BACKSPACE: u8 = 127;
 }
 
+/// The type is a callback for completion.
 pub type Completion = fn(&Vec<u8>, &mut Vec<Vec<u8>>);
 
+/// The struct is to management the history of command line.
 pub struct History {
     commands: VecDeque<Vec<u8>>,
     position: usize,
@@ -68,6 +113,7 @@ pub struct History {
 }
 
 impl History {
+    /// Initialize history. `limit` is the maximum size of history. If limit is zero, unlimited.
     pub fn new(limit: usize) -> Self {
         History {
             commands: VecDeque::new(),
@@ -76,6 +122,7 @@ impl History {
         }
     }
 
+    /// Return a next command from the current line.
     pub(crate) fn next(&mut self) -> Option<&Vec<u8>> {
         if self.commands.len() == 0 || self.position == self.commands.len() {
             None
@@ -85,6 +132,7 @@ impl History {
         }
     }
 
+    /// Return a previous command from the current line.
     pub(crate) fn prev(&mut self) -> Option<&Vec<u8>> {
         if self.commands.len() == 0 || self.position == 0 {
             None
@@ -101,11 +149,13 @@ impl History {
         self.commands.push_back(history);
     }
 
+    /// Append a new command.
     pub fn append(&mut self, history: Vec<u8>) {
         self._append(history);
         self.position = self.commands.len();
     }
 
+    /// Load a history from the given `file_path`.
     pub fn load<P: AsRef<Path>>(&mut self, file_path: P) -> io::Result<()> {
         let mut file = match File::open(file_path) {
             Ok(file) => file,
@@ -136,6 +186,8 @@ impl History {
         }
         Ok(())
     }
+
+    /// Save the history to the given `file_path`.
     pub fn save<P: AsRef<Path>>(&mut self, file_path: P) -> io::Result<()> {
         File::create(file_path).and_then(|mut file| {
             for cmd in self.commands.iter() {
@@ -517,14 +569,17 @@ impl<'a> Drop for Line<'a> {
     }
 }
 
+/// A instance of interaction.
 pub struct Interaction {
     prompt: Vec<u8>,
     completion: Option<Completion>,
+    /// If true, the interaction mode is multi line.
     pub multi: bool,
     history: History,
 }
 
 impl Interaction {
+    /// Initialize a interaction.
     pub fn new(
         prompt: Vec<u8>,
         completion: Option<Completion>,
@@ -539,14 +594,17 @@ impl Interaction {
         }
     }
 
+    /// Initialize interaction from prompt.
     pub fn from(prompt: &[u8]) -> Self {
         Interaction::new(prompt.to_vec(), None, true, 0)
     }
 
+    /// Initialize interaction from prompt.
     pub fn from_str(prompt: &str) -> Self {
         Interaction::new(prompt.as_bytes().to_vec(), None, true, 0)
     }
 
+    /// Get the line of input.
     pub fn line(&mut self) -> io::Result<Vec<u8>> {
         let mut buffer = vec![0; 0];
         Line::new(
@@ -565,27 +623,50 @@ impl Interaction {
         })
     }
 
+    /// Set the prompt.
     pub fn set_prompt(&mut self, prompt: &[u8]) {
         self.prompt = prompt.to_vec();
     }
 
+    /// Set the completion.
     pub fn set_completion(&mut self, completion: Completion) {
         self.completion = Some(completion);
     }
 
+    /// Set the maximum size of history.
     pub fn set_history_limit(&mut self, limit: usize) {
         self.history = History::new(limit);
     }
 
+    /// Load a history from `file_path`.
     pub fn load_history<P: AsRef<Path>>(&mut self, file_path: P) -> io::Result<()> {
         self.history.load(file_path)
     }
 
+    /// Save the history to `file_path`.
     pub fn save_history<P: AsRef<Path>>(&mut self, file_path: P) -> io::Result<()> {
         self.history.save(file_path)
     }
 }
 
+/// Builder of [Interaction](struct.Interaction.html).
+///
+/// # Example
+/// ```no_run
+/// use interaction::InteractionBuilder;
+///
+/// let history_file = "./.example_history";
+/// let inter = InteractionBuilder::new()
+///     .prompt_str(";;>")
+///     .history_limit(5)
+///     .completion(|_input, completions| {
+///         completions.push(b"foo".to_vec());
+///         completions.push(b"bar".to_vec());
+///     })
+///     .load_history(history_file)
+///     .unwrap()
+///     .build();
+/// ```
 pub struct InteractionBuilder {
     prompt: Vec<u8>,
     completion: Option<Completion>,
@@ -594,6 +675,7 @@ pub struct InteractionBuilder {
 }
 
 impl InteractionBuilder {
+    /// Initialize a builder.
     pub fn new() -> Self {
         InteractionBuilder {
             prompt: vec![0; 0],
@@ -603,6 +685,7 @@ impl InteractionBuilder {
         }
     }
 
+    /// Build a interaction.
     pub fn build(self) -> Interaction {
         Interaction {
             prompt: self.prompt,
@@ -612,31 +695,37 @@ impl InteractionBuilder {
         }
     }
 
+    /// Set a prompt.
     pub fn prompt(mut self, prompt: &[u8]) -> Self {
         self.prompt = prompt.to_vec();
         self
     }
 
+    /// Set a prompt.
     pub fn prompt_str(mut self, prompt: &str) -> Self {
         self.prompt = prompt.as_bytes().to_vec();
         self
     }
 
+    /// Set a completion.
     pub fn completion(mut self, completion: Completion) -> Self {
         self.completion = Some(completion);
         self
     }
 
+    /// Set a mode.
     pub fn mode(mut self, multi: bool) -> Self {
         self.multi = multi;
         self
     }
 
+    /// Set a maximum size of history.
     pub fn history_limit(mut self, limit: usize) -> Self {
         self.history = History::new(limit);
         self
     }
 
+    /// Load a history from `file_path`.
     pub fn load_history<P: AsRef<Path>>(mut self, file_path: P) -> io::Result<Self> {
         self.history.load(file_path).and(Ok(self))
     }
